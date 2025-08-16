@@ -35,6 +35,7 @@ Mendukung **Upload file (image, audio, document)**, **dark/light mode**, **chat 
 
 ## 📂 Struktur Project
 
+```bash
 project-root/
 │── /public
 │   ├── /icons         # Icon bot, favicon, og-banner
@@ -51,7 +52,7 @@ project-root/
 │── server.js          # Konfigurasi server
 │── package.json
 │── README.md
-
+```
 
 ---
 
