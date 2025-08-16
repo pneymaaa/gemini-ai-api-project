@@ -1,28 +1,59 @@
-import express from 'express';
-import multer from 'multer';
-import fs from 'fs/promises';
+import express from "express";
+import multer from "multer";
+import fs from "fs"; 
+import path from "path";
 import dotenv from 'dotenv';
+import { fileURLToPath } from "url";
 import { GoogleGenAI, Modality } from '@google/genai';
-
 dotenv.config();
 
-const router = express.Router();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const router = express();
+const uploadDir = path.join(__dirname, "../public/uploads");
+
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const model = 'gemini-1.5-flash';
-const upload = multer({ dest: 'uploads/' });
+
+// Buat folder uploads kalau belum ada
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const filePath = path.join(uploadDir, file.originalname);
+
+    //Jika file sudah ada, hapus dulu
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    cb(null, file.originalname);
+  },
+});
+
+const upload = multer({ storage });
 
 /**
  * Helper untuk convert file ke base64
  */
-const fileToBase64 = async (filePath) => {
-  const buffer = await fs.readFile(filePath);
-  return buffer.toString('base64');
-};
+const fileToBase64 = (filePath) =>
+  new Promise((resolve, reject) => {
+    fs.readFile(filePath, (err, buffer) => {
+      if (err) return reject(err);
+      resolve(buffer.toString("base64"));
+    });
+  });
 
 /**
  * Generate text only
  */
-router.post('/generate-text', async (req, res, next) => {
+router.post('/generate-text', upload.none(), async (req, res, next) => {
   try {
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== 'string') {
@@ -34,7 +65,18 @@ router.post('/generate-text', async (req, res, next) => {
       contents: prompt,
     });
 
-    res.status(200).json({ success: true, output: result });
+    if (!result.candidates?.length || !result.candidates[0].content?.parts) {
+      return res.status(500).json({ success: false, error: 'No valid output from model' });
+    }
+
+    const outputs = result.candidates[0].content.parts
+      .filter((part) => part.text)
+      .map((part) => part.text);
+
+    const output = outputs[0] || '';
+
+    res.status(200).json({ success: true, output: output });
+    
   } catch (error) {
     next(error);
   }
@@ -79,11 +121,14 @@ router.post('/generate-from-image', upload.single('image'), async (req, res, nex
       .filter((part) => part.text)
       .map((part) => part.text);
 
-    res.status(200).json({ success: true, output: outputs });
+    const output = outputs[0] || '';
+
+    res.status(200).json({ success: true, output: output });
 
   } catch (error) {
     next(error);
-  } finally {
+  } 
+  finally {
     if (req.file?.path) {
       try {
         await fs.unlink(req.file.path);
@@ -139,7 +184,9 @@ router.post('/generate-from-document', upload.single('document'), async (req, re
       .filter((part) => part.text)
       .map((part) => part.text);
 
-    res.status(200).json({ success: true, output: outputs });
+    const output = outputs[0] || '';
+
+    res.status(200).json({ success: true, output: output });
 
   } catch (error) {
     next(error);
@@ -192,7 +239,9 @@ router.post('/generate-from-audio', upload.single('audio'), async (req, res, nex
       .filter((part) => part.text)
       .map((part) => part.text);
 
-    res.status(200).json({ success: true, output: outputs });
+    const output = outputs[0] || '';
+
+    res.status(200).json({ success: true, output: output });
   } catch (error) {
     next(error);
   } finally {
