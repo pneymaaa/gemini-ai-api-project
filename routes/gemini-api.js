@@ -1,109 +1,207 @@
+import express from 'express';
+import multer from 'multer';
+import fs from 'fs/promises';
+import dotenv from 'dotenv';
+import { GoogleGenAI, Modality } from '@google/genai';
 
-const express = require('express');
-const multer = require('multer');
-const fs = require('fs');
-const dotenv = require('dotenv');
 dotenv.config();
 
 const router = express.Router();
-//const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { GoogleGenAI, Modality, Mode } = require('@google/genai');
-
-const genAI = new GoogleGenAI({apiKey: process.env.GEMINI_API_KEY});
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const model = 'gemini-1.5-flash';
-//const model = genAI.getGenerativeModel({model: 'models/gemini-1.5-flash'});
-//const model = genAI.models.generateContent({model: 'models/gemini-1.5-flash'});
-const upload = multer({dest: 'uploads/'});
+const upload = multer({ dest: 'uploads/' });
 
+/**
+ * Helper untuk convert file ke base64
+ */
+const fileToBase64 = async (filePath) => {
+  const buffer = await fs.readFile(filePath);
+  return buffer.toString('base64');
+};
 
-router.post('/generate-text', async (req, res) => {
+/**
+ * Generate text only
+ */
+router.post('/generate-text', async (req, res, next) => {
+  try {
     const { prompt } = req.body;
-    try {
-        const response = await genAI.models.generateContent({
-            model: model,
-            contents: prompt
-        });
-        res.json({ output: response.text });
-    } catch (error) {
-        res.status(500).json({error: error.message});
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ success: false, error: 'Prompt is required and must be a string' });
     }
-})
 
-router.post('/generate-from-image', upload.single('image'), async(req,res)=> {
-    const prompt = req.body.prompt || 'Describe the image';
-    const imagePath = req.file.path;
-    const imageData = fs.readFileSync(imagePath);
-    const base64Image = imageData.toString("base64");
+    const result = await genAI.models.generateContent({
+      model,
+      contents: prompt,
+    });
+
+    res.status(200).json({ success: true, output: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Generate from image
+ */
+router.post('/generate-from-image', upload.single('image'), async (req, res, next) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ success: false, error: 'Prompt is required and must be a string' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Image file is required' });
+    }
+
+    if (!['image/png', 'image/jpeg'].includes(req.file.mimetype)) {
+      return res.status(400).json({ success: false, error: 'Only PNG or JPEG images are allowed' });
+    }
+
+    const base64Image = await fileToBase64(req.file.path);
 
     const contents = [
-        {text: prompt},
-        {inlineData: {
-            mimeType: 'image/png',
-            data: base64Image
-        }}
-    ]
+      { text: prompt },
+      { inlineData: { mimeType: req.file.mimetype, data: base64Image } },
+    ];
 
-    try {
-        const response = await genAI.models.generateContent({
-            model: model,
-            contents: contents,
-            config: {
-                responseModalities: [Modality.TEXT]
-            }
-        });
-        for (const part of response.candidates[0].content.parts) {
-            if (part.text) {
-                res.json({ output: part.text, part: part });
-            }
-        }
-    } catch (error) {
-        res.status(500).json({error: error.message});
-    } finally {
-        fs.unlinkSync(imagePath);
-    }
-})
+    const result = await genAI.models.generateContent({
+      model,
+      contents,
+      config: { responseModalities: [Modality.TEXT] },
+    });
 
-router.post('/generative-from-document', upload.single('document'), async(req, res)=>{
-    const prompt = req.body.prompt || 'Analyze this document';
-    const filePath = req.file.path;
-    const buffer = fs.readFileSync(filePath);
-    const base64Data = buffer.toString('base64');
-    const mimeType = req.file.mimetype;
-
-    try {
-        const documentPart = {
-            inlineData: { data: base64Data, mimeType }
-        };
-
-        const result = await model.generateContent([prompt, documentPart]);
-        const response = await result.response;
-        res.json({output: response.text()});
-    } catch (error) {
-        res.status(500).json({error: error.message});
-    } finally {
-        fs.unlinkSync(filePath);
-    }
-})
-
-router.post('/generate-from-audio', upload.single('audio'), async(req,res) => {
-    const prompt = req.body.prompt || 'Transcribe or analyze the following audio:';
-    const filePath = req.file.path;
-    const audioBuffer = fs.readFileSync(filePath);
-    const base64Audio = audioBuffer.toString('base64');
-    const mimeType = req.file.mimetype;
-    const audioPart = {
-        inlineData: {data: base64Audio, mimeType: mimeType }
+    if (!result.candidates?.length || !result.candidates[0].content?.parts) {
+      return res.status(500).json({ success: false, error: 'No valid output from model' });
     }
 
-    try {
-        const result = await model.generateContent([prompt, audioPart]);
-        const response = await result.response;
-        res.json({output: response.text()});
-    } catch (error) {
-        res.status(500).json({error: error.message});
-    } finally {
-        fs.unlinkSync(filePath);
-    }
-})
+    const outputs = result.candidates[0].content.parts
+      .filter((part) => part.text)
+      .map((part) => part.text);
 
-module.exports = router;
+    res.status(200).json({ success: true, output: outputs });
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (req.file?.path) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch {}
+    }
+  }
+});
+
+/**
+ * Generate from document
+ */
+router.post('/generate-from-document', upload.single('document'), async (req, res, next) => {
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ success: false, error: 'Prompt is required and must be a string' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Document file is required' });
+    }
+
+    if (![
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        ].includes(req.file.mimetype)) {
+            return res.status(400).json({ success: false, error: 'Only PDF, DOC, DOCX, TXT, XLS, or XLSX files are allowed' });
+    }
+
+    const base64Document = await fileToBase64(req.file.path);
+
+    const contents = [
+      { text: prompt },
+      { inlineData: { mimeType: req.file.mimetype, data: base64Document } },
+    ];
+
+    const result = await genAI.models.generateContent({
+      model,
+      contents,
+      config: { responseModalities: [Modality.TEXT] },
+    });
+
+    if (!result.candidates?.length || !result.candidates[0].content?.parts) {
+      return res.status(500).json({ success: false, error: 'No valid output from model' });
+    }
+
+    const outputs = result.candidates[0].content.parts
+      .filter((part) => part.text)
+      .map((part) => part.text);
+
+    res.status(200).json({ success: true, output: outputs });
+
+  } catch (error) {
+    next(error);
+  } finally {
+    if (req.file?.path) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch {}
+    }
+  }
+});
+
+/**
+ * Generate from audio
+ */
+router.post('/generate-from-audio', upload.single('audio'), async (req, res, next) => {
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ success: false, error: 'Prompt is required and must be a string' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Audio file is required' });
+    }
+
+    if (!['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/mp4'].includes(req.file.mimetype)) {
+        return res.status(400).json({ success: false, error: 'Only MP3, WAV, OGG, WEBM, or M4A audio files are allowed' });
+    }
+
+    const base64Audio = await fileToBase64(req.file.path);
+
+    const contents = [
+      { text: prompt },
+      { inlineData: { mimeType: req.file.mimetype, data: base64Audio } },
+    ];
+
+    const result = await genAI.models.generateContent({
+      model,
+      contents,
+      config: { responseModalities: [Modality.TEXT] },
+    });
+
+    if (!result.candidates?.length || !result.candidates[0].content?.parts) {
+      return res.status(500).json({ success: false, error: 'No valid output from model' });
+    }
+
+    const outputs = result.candidates[0].content.parts
+      .filter((part) => part.text)
+      .map((part) => part.text);
+
+    res.status(200).json({ success: true, output: outputs });
+  } catch (error) {
+    next(error);
+  } finally {
+    if (req.file?.path) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch {}
+    }
+  }
+});
+
+export default router;

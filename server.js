@@ -1,6 +1,7 @@
-const http = require('http');
-const app = require('./index');
-const dotenv = require('dotenv');
+import http from 'http';
+import app from './index.js';
+import dotenv from 'dotenv';
+
 dotenv.config();
 
 const server = http.createServer(app);
